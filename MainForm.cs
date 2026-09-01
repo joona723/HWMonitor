@@ -179,7 +179,7 @@ sealed class MainForm : Form
 
         // --- Connections page -----------------------------------------------------
         (_connectionSearchBox, _connectionGrid) = BuildSearchableGrid(
-            placeholder: "Filter by process, IP, or port...",
+            placeholder: "Filter by process, path, IP, or port...",
             columns: [
                 ("Protocol", "Proto", 7),
                 ("PID", "PID", 7),
@@ -1171,7 +1171,8 @@ sealed class MainForm : Form
                 c.LocalAddress.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                 c.RemoteAddress.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                 c.Pid.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-                (pidNames.TryGetValue(c.Pid, out string? n) && n.Contains(filter, StringComparison.OrdinalIgnoreCase)));
+                (pidNames.TryGetValue(c.Pid, out string? n) && n.Contains(filter, StringComparison.OrdinalIgnoreCase)) ||
+                (GetProcessPath(c.Pid) is { } p && p.Contains(filter, StringComparison.OrdinalIgnoreCase)));
         }
 
         List<(ConnectionInfo Connection, string? Reason)> flagged = filtered
