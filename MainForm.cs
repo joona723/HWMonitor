@@ -26,7 +26,18 @@ sealed class MainForm : Form
     private readonly NetworkEtwMonitor _etwMonitor = new();
     private readonly HardwareMonitor _hardwareMonitor = new();
     private readonly ProcessPriorityStore _priorityStore = ProcessPriorityStore.Load();
+    private readonly TraySettings _settings = TraySettings.Load();
     private readonly System.Windows.Forms.Timer _timer;
+
+    private static readonly (string Label, int Ms)[] RefreshIntervalChoices =
+    [
+        ("0.25s", 250),
+        ("0.5s", 500),
+        ("1s", 1000),
+        ("2s", 2000),
+        ("5s", 5000),
+        ("10s", 10000),
+    ];
 
     private readonly PerformanceGraph _cpuGraph;
     private readonly PerformanceGraph _memGraph;
@@ -275,8 +286,18 @@ sealed class MainForm : Form
         // --- Status bar --------------------------------------------------------
         var statusStrip = new StatusStrip { BackColor = HeaderBg, SizingGrip = false };
         statusStrip.Renderer = new ToolStripProfessionalRenderer(new DarkStatusStripColors());
-        _statusLabel = new ToolStripStatusLabel { ForeColor = TextSecondary, Text = "Starting..." };
+        _statusLabel = new ToolStripStatusLabel { ForeColor = TextSecondary, Text = "Starting...", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
         statusStrip.Items.Add(_statusLabel);
+        statusStrip.Items.Add(new ToolStripStatusLabel { ForeColor = TextSecondary, Text = "Refresh every:" });
+        var refreshCombo = new ToolStripComboBox { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 64 };
+        foreach ((string label, int _) in RefreshIntervalChoices)
+        {
+            refreshCombo.Items.Add(label);
+        }
+        int currentChoiceIndex = Array.FindIndex(RefreshIntervalChoices, c => c.Ms == _settings.RefreshIntervalMs);
+        refreshCombo.SelectedIndex = currentChoiceIndex >= 0 ? currentChoiceIndex : 2;
+        refreshCombo.SelectedIndexChanged += (_, _) => SetRefreshInterval(RefreshIntervalChoices[refreshCombo.SelectedIndex].Ms);
+        statusStrip.Items.Add(refreshCombo);
 
         Controls.Add(bodyPanel);
         Controls.Add(headerPanel);
@@ -289,11 +310,18 @@ sealed class MainForm : Form
             ? "Per-app network speed: live (ETW)"
             : $"Per-app network speed unavailable ({_etwMonitor.StartError}); showing connection counts only";
 
-        _timer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _timer = new System.Windows.Forms.Timer { Interval = RefreshIntervalChoices[refreshCombo.SelectedIndex].Ms };
         _timer.Tick += (_, _) => RefreshAll();
         _timer.Start();
 
         RefreshAll();
+    }
+
+    private void SetRefreshInterval(int ms)
+    {
+        _timer.Interval = ms;
+        _settings.RefreshIntervalMs = ms;
+        _settings.Save();
     }
 
     private void SelectPage(int index)

@@ -34,6 +34,8 @@ sealed class TraySettings
 
     public bool AutoUpdateCheck { get; set; } = true;
 
+    public int RefreshIntervalMs { get; set; } = 1000;
+
     public static TraySettings Load()
     {
         try
