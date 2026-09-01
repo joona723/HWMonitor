@@ -5,11 +5,12 @@ using System.Text.Json;
 
 namespace HWMonitor;
 
-sealed record UpdateInfo(Version Version, string TagName, string Url);
+sealed record UpdateInfo(Version Version, string TagName, string Url, string? DownloadUrl);
 
 static class UpdateChecker
 {
     private const string ReleasesApiUrl = "https://api.github.com/repos/joona723/HWMonitor/releases/latest";
+    private const string UpdateAssetName = "HWMonitor.exe";
 
     public static Version CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
@@ -43,7 +44,26 @@ static class UpdateChecker
             return null;
         }
 
-        return latest > CurrentVersion ? new UpdateInfo(latest, tagName, url) : null;
+        if (latest <= CurrentVersion)
+        {
+            return null;
+        }
+
+        string? downloadUrl = null;
+        if (root.TryGetProperty("assets", out JsonElement assets) && assets.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement asset in assets.EnumerateArray())
+            {
+                string? assetName = asset.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() : null;
+                if (string.Equals(assetName, UpdateAssetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    downloadUrl = asset.TryGetProperty("browser_download_url", out JsonElement urlProp) ? urlProp.GetString() : null;
+                    break;
+                }
+            }
+        }
+
+        return new UpdateInfo(latest, tagName, url, downloadUrl);
     }
 
     private static bool TryParseVersion(string tagName, out Version? version)

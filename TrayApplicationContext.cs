@@ -78,7 +78,7 @@ sealed class TrayApplicationContext : ApplicationContext
         boostMenu.DropDownItems.Add(_boostAggressiveItem);
         menu.Items.Add(boostMenu);
         menu.Items.Add(new ToolStripSeparator());
-        _autoUpdateItem = new ToolStripMenuItem("Automatically Check for Updates", null, (_, _) => ToggleAutoUpdate());
+        _autoUpdateItem = new ToolStripMenuItem("Automatically Check && Install Updates", null, (_, _) => ToggleAutoUpdate());
         menu.Items.Add(_autoUpdateItem);
         menu.Items.Add("Check for Updates Now...", null, (_, _) => CheckForUpdatesManual());
         menu.Items.Add(new ToolStripSeparator());
@@ -417,7 +417,7 @@ sealed class TrayApplicationContext : ApplicationContext
             UpdateInfo? update = await UpdateChecker.CheckForUpdateAsync();
             if (update is not null)
             {
-                PromptForUpdate(update);
+                await InstallUpdateSilentlyAsync(update);
             }
         }
         catch
@@ -433,32 +433,33 @@ sealed class TrayApplicationContext : ApplicationContext
             UpdateInfo? update = await UpdateChecker.CheckForUpdateAsync();
             if (update is not null)
             {
-                PromptForUpdate(update);
+                await InstallUpdateSilentlyAsync(update);
             }
             else
             {
-                MessageBox.Show("You're running the latest version of HWMonitor.", "HWMonitor",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _cpuIcon.ShowBalloonTip(4000, "HWMonitor", "You're running the latest version.", ToolTipIcon.Info);
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Could not check for updates:\n{ex.Message}", "HWMonitor",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _cpuIcon.ShowBalloonTip(4000, "HWMonitor", $"Could not check for updates: {ex.Message}", ToolTipIcon.Warning);
         }
     }
 
-    private static void PromptForUpdate(UpdateInfo update)
+    private async Task InstallUpdateSilentlyAsync(UpdateInfo update)
     {
-        DialogResult result = MessageBox.Show(
-            $"A new version of HWMonitor is available ({update.TagName}, you have {UpdateChecker.CurrentVersion}).\n\nOpen the download page now?",
-            "Update Available",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information);
-
-        if (result == DialogResult.Yes)
+        if (string.IsNullOrWhiteSpace(update.DownloadUrl))
         {
-            Process.Start(new ProcessStartInfo(update.Url) { UseShellExecute = true });
+            // Release has no attached HWMonitor.exe asset; nothing to install automatically.
+            return;
+        }
+
+        bool handoffStarted = await AutoUpdater.DownloadAndRelaunchAsync(update);
+        if (handoffStarted)
+        {
+            _cpuIcon.ShowBalloonTip(4000, "HWMonitor", $"Updating to {update.TagName}… restarting.", ToolTipIcon.Info);
+            await Task.Delay(1500);
+            ExitApplication();
         }
     }
 
