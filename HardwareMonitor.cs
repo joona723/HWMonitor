@@ -9,6 +9,8 @@ sealed class HardwareMonitor : IDisposable
 {
     private readonly Computer _computer;
     private readonly UpdateVisitor _updateVisitor = new();
+    private readonly int? _cpuBaseClockMhz;
+    private float _maxCpuClockMhzSeen;
 
     public HardwareMonitor()
     {
@@ -19,6 +21,7 @@ sealed class HardwareMonitor : IDisposable
             IsMotherboardEnabled = true,
         };
         _computer.Open();
+        _cpuBaseClockMhz = ReadCpuBaseClockMhz();
     }
 
     public Reading Read()
@@ -33,12 +36,118 @@ sealed class HardwareMonitor : IDisposable
 
         float? cpuFanRpm = FindFanRpm([HardwareType.Motherboard], preferredNames: ["CPU Fan", "CPU"]);
         float? gpuFanRpm = FindFanRpm([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], preferredNames: ["GPU Fan", "Fan 1", "Fan"]);
+        float? pumpRpm = FindFanByNameContains([HardwareType.Motherboard], ["pump"]);
 
         float? gpuLoad = FindLoad([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], preferredNames: ["GPU Core", "D3D 3D"]);
         float? gpuMemoryUsedMb = FindSensor([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], SensorType.SmallData, preferredNames: ["GPU Memory Used", "D3D Dedicated Memory Used"]);
         float? gpuMemoryTotalMb = FindSensor([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], SensorType.SmallData, preferredNames: ["GPU Memory Total"]);
 
-        return new Reading(cpuTemp, gpuTemp, cpuFanRpm, gpuFanRpm, gpuLoad, gpuMemoryUsedMb, gpuMemoryTotalMb);
+        float? gpuHotSpotC = FindSensorByNameContains([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], SensorType.Temperature, ["Hot Spot"]);
+        float? gpuMemoryJunctionC = FindSensorByNameContains([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], SensorType.Temperature, ["Memory Junction", "Mem Junction"]);
+
+        float? cpuPackagePowerW = FindSensor([HardwareType.Cpu], SensorType.Power, preferredNames: ["CPU Package"]);
+        float? gpuPowerW = FindSensor([HardwareType.GpuNvidia, HardwareType.GpuAmd, HardwareType.GpuIntel], SensorType.Power, preferredNames: ["GPU Power", "GPU Package"]);
+        float? estimatedTotalPowerW = cpuPackagePowerW is { } cp && gpuPowerW is { } gp ? cp + gp : cpuPackagePowerW ?? gpuPowerW;
+
+        List<CoreReading> coreTemps = CollectCoreSensors(SensorType.Temperature);
+        List<CoreReading> coreClocks = CollectCoreSensors(SensorType.Clock);
+
+        float? avgClockMhz = null;
+        if (coreClocks.Count > 0)
+        {
+            avgClockMhz = coreClocks.Average(c => c.Value);
+            float maxNow = coreClocks.Max(c => c.Value);
+            if (maxNow > _maxCpuClockMhzSeen)
+            {
+                _maxCpuClockMhzSeen = maxNow;
+            }
+        }
+
+        return new Reading(
+            cpuTemp,
+            gpuTemp,
+            cpuFanRpm,
+            gpuFanRpm,
+            gpuLoad,
+            gpuMemoryUsedMb,
+            gpuMemoryTotalMb,
+            coreTemps,
+            coreClocks,
+            pumpRpm,
+            cpuPackagePowerW,
+            gpuPowerW,
+            estimatedTotalPowerW,
+            gpuHotSpotC,
+            gpuMemoryJunctionC,
+            _cpuBaseClockMhz,
+            avgClockMhz,
+            _maxCpuClockMhzSeen > 0 ? _maxCpuClockMhzSeen : null);
+    }
+
+    private List<CoreReading> CollectCoreSensors(SensorType sensorType)
+    {
+        var results = new List<CoreReading>();
+
+        foreach (IHardware hardware in _computer.Hardware)
+        {
+            if (hardware.HardwareType != HardwareType.Cpu)
+            {
+                continue;
+            }
+
+            foreach (ISensor sensor in hardware.Sensors)
+            {
+                if (sensor.SensorType != sensorType || sensor.Value is not float value || !sensor.Name.Contains("Core #", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                results.Add(new CoreReading(sensor.Name, value));
+            }
+        }
+
+        return results
+            .OrderBy(c => ExtractCoreIndex(c.Label))
+            .ToList();
+    }
+
+    private static int ExtractCoreIndex(string label)
+    {
+        int hashIndex = label.IndexOf('#');
+        if (hashIndex < 0)
+        {
+            return int.MaxValue;
+        }
+
+        int start = hashIndex + 1;
+        int end = start;
+        while (end < label.Length && char.IsDigit(label[end]))
+        {
+            end++;
+        }
+
+        return end > start && int.TryParse(label.AsSpan(start, end - start), out int index) ? index : int.MaxValue;
+    }
+
+    private static int? ReadCpuBaseClockMhz()
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher("SELECT MaxClockSpeed FROM Win32_Processor");
+            foreach (System.Management.ManagementBaseObject obj in searcher.Get())
+            {
+                if (obj["MaxClockSpeed"] is uint mhz && mhz > 0)
+                {
+                    return (int)mhz;
+                }
+            }
+        }
+        catch
+        {
+            // WMI can be unavailable in locked-down environments; leave base clock unknown.
+        }
+
+        return null;
     }
 
     private float? FindLoad(HardwareType[] hardwareTypes, string[] preferredNames) =>
@@ -84,6 +193,52 @@ sealed class HardwareMonitor : IDisposable
         }
     }
 
+    private float? FindSensorByNameContains(HardwareType[] hardwareTypes, SensorType sensorType, string[] nameContains)
+    {
+        foreach (IHardware hardware in _computer.Hardware)
+        {
+            if (Array.IndexOf(hardwareTypes, hardware.HardwareType) < 0)
+            {
+                continue;
+            }
+
+            float? found = ScanSensorsByNameContains(hardware, sensorType, nameContains);
+            if (found is not null)
+            {
+                return found;
+            }
+
+            foreach (IHardware sub in hardware.SubHardware)
+            {
+                found = ScanSensorsByNameContains(sub, sensorType, nameContains);
+                if (found is not null)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static float? ScanSensorsByNameContains(IHardware hardware, SensorType sensorType, string[] nameContains)
+    {
+        foreach (ISensor sensor in hardware.Sensors)
+        {
+            if (sensor.SensorType != sensorType || sensor.Value is not float value)
+            {
+                continue;
+            }
+
+            if (Array.Exists(nameContains, n => sensor.Name.Contains(n, StringComparison.OrdinalIgnoreCase)))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
     private float? FindFanRpm(HardwareType[] hardwareTypes, string[] preferredNames)
     {
         float? best = null;
@@ -105,6 +260,9 @@ sealed class HardwareMonitor : IDisposable
 
         return preferred ?? best;
     }
+
+    private float? FindFanByNameContains(HardwareType[] hardwareTypes, string[] nameContains) =>
+        FindSensorByNameContains(hardwareTypes, SensorType.Fan, nameContains);
 
     private static void ScanFans(IHardware hardware, string[] preferredNames, ref float? best, ref float? preferred)
     {
@@ -225,4 +383,25 @@ sealed class HardwareMonitor : IDisposable
     }
 }
 
-readonly record struct Reading(float? CpuTempC, float? GpuTempC, float? CpuFanRpm, float? GpuFanRpm, float? GpuLoadPercent, float? GpuMemoryUsedMb, float? GpuMemoryTotalMb);
+/// <summary>One labeled per-core reading (temperature in °C or clock in MHz).</summary>
+readonly record struct CoreReading(string Label, float Value);
+
+readonly record struct Reading(
+    float? CpuTempC,
+    float? GpuTempC,
+    float? CpuFanRpm,
+    float? GpuFanRpm,
+    float? GpuLoadPercent,
+    float? GpuMemoryUsedMb,
+    float? GpuMemoryTotalMb,
+    IReadOnlyList<CoreReading>? CpuCoreTemps = null,
+    IReadOnlyList<CoreReading>? CpuCoreClocksMhz = null,
+    float? PumpRpm = null,
+    float? CpuPackagePowerW = null,
+    float? GpuPowerW = null,
+    float? EstimatedTotalPowerW = null,
+    float? GpuHotSpotC = null,
+    float? GpuMemoryJunctionC = null,
+    int? CpuBaseClockMhz = null,
+    float? CpuAvgClockMhz = null,
+    float? CpuMaxClockMhzSeen = null);

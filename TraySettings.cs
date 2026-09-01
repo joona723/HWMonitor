@@ -32,6 +32,8 @@ sealed class TraySettings
 
     public int BoostMode { get; set; } = 1;
 
+    public bool AutoUpdateCheck { get; set; } = true;
+
     public static TraySettings Load()
     {
         try

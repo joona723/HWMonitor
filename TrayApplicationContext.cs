@@ -25,7 +25,9 @@ sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _boostDisabledItem;
     private readonly ToolStripMenuItem _boostEnabledItem;
     private readonly ToolStripMenuItem _boostAggressiveItem;
+    private readonly ToolStripMenuItem _autoUpdateItem;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly Control _marshal = new();
     private MainForm? _mainForm;
 
     public TrayApplicationContext()
@@ -76,6 +78,10 @@ sealed class TrayApplicationContext : ApplicationContext
         boostMenu.DropDownItems.Add(_boostAggressiveItem);
         menu.Items.Add(boostMenu);
         menu.Items.Add(new ToolStripSeparator());
+        _autoUpdateItem = new ToolStripMenuItem("Automatically Check for Updates", null, (_, _) => ToggleAutoUpdate());
+        menu.Items.Add(_autoUpdateItem);
+        menu.Items.Add("Check for Updates Now...", null, (_, _) => CheckForUpdatesManual());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Diagnostics...", null, (_, _) => ShowDiagnostics());
         menu.Items.Add("Exit", null, (_, _) => ExitApplication());
 
@@ -94,23 +100,46 @@ sealed class TrayApplicationContext : ApplicationContext
         _cpuIcon.MouseClick += OnTrayIconMouseClick;
         _gpuIcon.MouseClick += OnTrayIconMouseClick;
 
+        // Force handle creation now so RequestShowMainWindow() can marshal onto this thread
+        // from the single-instance watcher thread even before any window has ever been shown.
+        _ = _marshal.Handle;
+
         UpdateModeChecks();
         UpdateStyleChecks();
         ApplyDisplayMode();
         UpdateBoostChecks();
         ApplyBoostMode(_settings.BoostMode);
         _startupItem.Checked = IsStartupTaskRegistered();
+        _autoUpdateItem.Checked = _settings.AutoUpdateCheck;
 
         _timer = new System.Windows.Forms.Timer { Interval = 2000 };
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
 
         Refresh();
+
+        if (_settings.AutoUpdateCheck)
+        {
+            CheckForUpdatesOnStartupAsync();
+        }
     }
 
     private void OnTrayIconMouseClick(object? sender, MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
+        {
+            ShowMainWindow();
+        }
+    }
+
+    /// <summary>Thread-safe entry point for a second app instance asking us to surface our window instead.</summary>
+    public void RequestShowMainWindow()
+    {
+        if (_marshal.InvokeRequired)
+        {
+            _marshal.BeginInvoke(ShowMainWindow);
+        }
+        else
         {
             ShowMainWindow();
         }
@@ -374,6 +403,65 @@ sealed class TrayApplicationContext : ApplicationContext
         _startupItem.Checked = IsStartupTaskRegistered();
     }
 
+    private void ToggleAutoUpdate()
+    {
+        _settings.AutoUpdateCheck = !_settings.AutoUpdateCheck;
+        _settings.Save();
+        _autoUpdateItem.Checked = _settings.AutoUpdateCheck;
+    }
+
+    private async void CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            UpdateInfo? update = await UpdateChecker.CheckForUpdateAsync();
+            if (update is not null)
+            {
+                PromptForUpdate(update);
+            }
+        }
+        catch
+        {
+            // Best-effort; silently ignore network/API failures on the automatic check.
+        }
+    }
+
+    private async void CheckForUpdatesManual()
+    {
+        try
+        {
+            UpdateInfo? update = await UpdateChecker.CheckForUpdateAsync();
+            if (update is not null)
+            {
+                PromptForUpdate(update);
+            }
+            else
+            {
+                MessageBox.Show("You're running the latest version of HWMonitor.", "HWMonitor",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not check for updates:\n{ex.Message}", "HWMonitor",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private static void PromptForUpdate(UpdateInfo update)
+    {
+        DialogResult result = MessageBox.Show(
+            $"A new version of HWMonitor is available ({update.TagName}, you have {UpdateChecker.CurrentVersion}).\n\nOpen the download page now?",
+            "Update Available",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information);
+
+        if (result == DialogResult.Yes)
+        {
+            Process.Start(new ProcessStartInfo(update.Url) { UseShellExecute = true });
+        }
+    }
+
     private static bool IsStartupTaskRegistered()
     {
         try
@@ -445,12 +533,14 @@ sealed class TrayApplicationContext : ApplicationContext
         string gpuText = Format(reading.GpuTempC);
         string cpuFanText = FormatFan(reading.CpuFanRpm);
         string gpuFanText = FormatFan(reading.GpuFanRpm);
+        string cpuPowerText = FormatPower(reading.CpuPackagePowerW);
+        string gpuPowerText = FormatPower(reading.GpuPowerW);
 
         _cpuMenuItem.Text = $"CPU: {cpuText}";
         _gpuMenuItem.Text = $"GPU: {gpuText}";
 
-        _cpuIcon.Text = $"CPU: {cpuText}\nFan: {cpuFanText}";
-        _gpuIcon.Text = $"GPU: {gpuText}\nFan: {gpuFanText}";
+        _cpuIcon.Text = $"CPU: {cpuText}  {cpuPowerText}\nFan: {cpuFanText}";
+        _gpuIcon.Text = $"GPU: {gpuText}  {gpuPowerText}\nFan: {gpuFanText}";
 
         Color cpuColor = Color.FromArgb(_settings.CpuColorArgb);
         Color gpuColor = Color.FromArgb(_settings.GpuColorArgb);
@@ -471,6 +561,8 @@ sealed class TrayApplicationContext : ApplicationContext
     private static string Format(float? tempC) => tempC is { } value ? $"{value:0}°C" : "n/a";
 
     private static string FormatFan(float? rpm) => rpm is { } value ? $"{value:0} RPM" : "n/a";
+
+    private static string FormatPower(float? watts) => watts is { } value ? $"{value:0}W" : "";
 
     private void ShowDiagnostics()
     {
@@ -592,6 +684,7 @@ sealed class TrayApplicationContext : ApplicationContext
             _gpuIcon.Dispose();
             _monitor.Dispose();
             _mainForm?.Dispose();
+            _marshal.Dispose();
         }
         base.Dispose(disposing);
     }

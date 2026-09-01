@@ -24,6 +24,34 @@ sealed class NetworkConnectionsService
         return results;
     }
 
+    /// <summary>Force-closes an IPv4 TCP connection (owner process keeps running; only the socket is torn down). Requires admin.</summary>
+    public static bool CloseTcpConnection(ConnectionInfo connection)
+    {
+        if (connection.Protocol != "TCP")
+        {
+            return false;
+        }
+
+        try
+        {
+            var row = new MibTcpRow
+            {
+                state = 12, // MIB_TCP_STATE_DELETE_TCB
+                localAddr = BitConverter.ToUInt32(IPAddress.Parse(connection.LocalAddress).GetAddressBytes(), 0),
+                localPort = PortToRawOrder(connection.LocalPort),
+                remoteAddr = BitConverter.ToUInt32(IPAddress.Parse(connection.RemoteAddress).GetAddressBytes(), 0),
+                remotePort = PortToRawOrder(connection.RemotePort),
+            };
+            return NativeMethods.SetTcpEntry(ref row) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static uint PortToRawOrder(int hostPort) => (uint)(((hostPort & 0xFF) << 8) | ((hostPort >> 8) & 0xFF));
+
     public static Dictionary<int, int> CountsByPid(IEnumerable<ConnectionInfo> connections)
     {
         var counts = new Dictionary<int, int>();
@@ -230,6 +258,16 @@ sealed class NetworkConnectionsService
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct MibTcpRow
+    {
+        public uint state;
+        public uint localAddr;
+        public uint localPort;
+        public uint remoteAddr;
+        public uint remotePort;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct MibUdpRowOwnerPid
     {
         public uint localAddr;
@@ -254,5 +292,8 @@ sealed class NetworkConnectionsService
 
         [DllImport("iphlpapi.dll", SetLastError = true)]
         public static extern uint GetExtendedUdpTable(nint pUdpTable, ref int pdwSize, bool bOrder, int ulAf, int tableClass, int reserved);
+
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        public static extern uint SetTcpEntry(ref MibTcpRow pTcpRow);
     }
 }
