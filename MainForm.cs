@@ -199,9 +199,12 @@ sealed class MainForm : Form
                 ("Local", "Local Address", 16),
                 ("Remote", "Remote Address", 16),
                 ("State", "State", 10),
-                ("Usage", "Usage", 11),
+                ("Usage", $"{NetRateGlyphs.Download} In / {NetRateGlyphs.Upload} Out", 13),
                 ("Risk", "Risk", 16),
             ]);
+        _connectionGrid.MultiSelect = true;
+        _connectionGrid.Columns["Usage"]!.ToolTipText =
+            $"Current network speed for this connection's process:\n{NetRateGlyphs.Download} In = incoming/download rate\n{NetRateGlyphs.Upload} Out = outgoing/upload rate";
         _connectionGrid.ColumnHeaderMouseClick += (_, e) => OnSortColumnClicked(_connectionGrid, e.ColumnIndex, ref _connectionSortColumn, ref _connectionSortDescending, RenderConnectionRows);
         _connectionGrid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) ShowProcessPropertiesForPid((int)_connectionGrid.Rows[e.RowIndex].Cells["PID"].Value); };
         _connectionSearchBox.TextChanged += (_, _) => RenderConnectionRows();
@@ -993,7 +996,7 @@ sealed class MainForm : Form
         _memChipValue.Text = $"{memPercent:0}%";
 
         double netTotal = stats.NetworkRxBytesPerSec + stats.NetworkTxBytesPerSec;
-        _netGraph.ValueText = $"↓{FormatBytesPerSec((long)stats.NetworkRxBytesPerSec)}  ↑{FormatBytesPerSec((long)stats.NetworkTxBytesPerSec)}";
+        _netGraph.ValueText = $"{NetRateGlyphs.Download}{FormatBytesPerSec((long)stats.NetworkRxBytesPerSec)}  {NetRateGlyphs.Upload}{FormatBytesPerSec((long)stats.NetworkTxBytesPerSec)}";
         _netGraph.AddSample(netTotal);
         _netChipValue.Text = FormatBytesPerSec((long)netTotal);
 
@@ -1233,7 +1236,7 @@ sealed class MainForm : Form
             string local = $"{c.LocalAddress}:{c.LocalPort}";
             string remote = c.RemotePort == 0 ? "*" : $"{c.RemoteAddress}:{c.RemotePort}";
             (long rx, long tx) = _etwMonitor.GetRatesForProcess(c.Pid);
-            string usage = _etwMonitor.IsRunning ? $"↓{FormatBytesPerSec(rx)} ↑{FormatBytesPerSec(tx)}" : "n/a";
+            string usage = _etwMonitor.IsRunning ? $"{NetRateGlyphs.Download}{FormatBytesPerSec(rx)} {NetRateGlyphs.Upload}{FormatBytesPerSec(tx)}" : "n/a";
             string path = GetProcessPath(c.Pid) ?? "";
             int rowIndex = _connectionGrid.Rows.Add(c.Protocol, c.Pid, processName, path, local, remote, c.State, usage, reason ?? "");
             _connectionGrid.Rows[rowIndex].Tag = c;
@@ -1251,6 +1254,9 @@ sealed class MainForm : Form
     private void AttachConnectionContextMenu()
     {
         var menu = new ContextMenuStrip();
+        var trackItem = new ToolStripMenuItem("Track Bandwidth...", null, (_, _) => TrackSelectedConnections());
+        menu.Items.Add(trackItem);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Copy Local Address", null, (_, _) => CopySelectedConnectionAddress(local: true));
         menu.Items.Add("Copy Remote Address", null, (_, _) => CopySelectedConnectionAddress(local: false));
         menu.Items.Add(new ToolStripSeparator());
@@ -1264,13 +1270,14 @@ sealed class MainForm : Form
 
         menu.Opening += (_, _) =>
         {
+            trackItem.Enabled = _connectionGrid.SelectedRows.Count > 0;
             closeItem.Enabled = _connectionGrid.SelectedRows.Count > 0 && _connectionGrid.SelectedRows[0].Tag is ConnectionInfo { Protocol: "TCP" };
         };
 
         _connectionGrid.ContextMenuStrip = menu;
         _connectionGrid.CellMouseDown += (_, e) =>
         {
-            if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && !_connectionGrid.Rows[e.RowIndex].Selected)
             {
                 _connectionGrid.ClearSelection();
                 _connectionGrid.Rows[e.RowIndex].Selected = true;
@@ -1280,6 +1287,28 @@ sealed class MainForm : Form
 
     private ConnectionInfo? SelectedConnection() =>
         _connectionGrid.SelectedRows.Count > 0 && _connectionGrid.SelectedRows[0].Tag is ConnectionInfo c ? c : null;
+
+    private List<ConnectionInfo> SelectedConnections() =>
+        _connectionGrid.Rows
+            .Cast<DataGridViewRow>()
+            .Where(r => r.Selected && r.Tag is ConnectionInfo)
+            .Select(r => (ConnectionInfo)r.Tag!)
+            .ToList();
+
+    private void TrackSelectedConnections()
+    {
+        List<ConnectionInfo> connections = SelectedConnections();
+        if (connections.Count == 0)
+        {
+            return;
+        }
+
+        var tracker = new ConnectionTrackerForm(
+            _etwMonitor,
+            connections,
+            pid => _lastProcessSamples.FirstOrDefault(p => p.Pid == pid)?.Name ?? $"pid {pid}");
+        tracker.Show(this);
+    }
 
     private void CopySelectedConnectionAddress(bool local)
     {
@@ -1417,7 +1446,7 @@ sealed class MainForm : Form
         return $"{value:0.#} {units[unit]}";
     }
 
-    private static string FormatBytesPerSec(long bytesPerSec) => $"{FormatBytes(bytesPerSec)}/s";
+    internal static string FormatBytesPerSec(long bytesPerSec) => $"{FormatBytes(bytesPerSec)}/s";
 
     private static long Sum((long Rx, long Tx) rates) => rates.Rx + rates.Tx;
 
