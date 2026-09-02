@@ -11,6 +11,8 @@ sealed class PerformanceGraph : Control
 
     public string Title { get; set; } = "";
     public string ValueText { get; set; } = "";
+    /// <summary>When set, drawn instead of <see cref="ValueText"/> as separately-colored runs (e.g. a green download rate next to an orange upload rate).</summary>
+    public (string Text, Color Color)[]? ValueTextParts { get; set; }
     public string SubText { get; set; } = "";
     public Color LineColor { get; set; } = Color.FromArgb(0, 174, 219);
     public double MaxValue { get; set; } = 100;
@@ -70,11 +72,25 @@ sealed class PerformanceGraph : Control
             g.DrawString(Title.ToUpperInvariant(), titleFont, titleBrush, padX + 14, headerTop);
         }
 
-        using (var valueBrush = new SolidBrush(Color.White))
         using (var valueFont = new Font("Segoe UI", 15f, FontStyle.Bold))
         {
-            SizeF measured = g.MeasureString(ValueText, valueFont);
-            g.DrawString(ValueText, valueFont, valueBrush, Width - measured.Width - padX, headerTop - 4);
+            if (ValueTextParts is { Length: > 0 } parts)
+            {
+                float totalWidth = parts.Sum(p => g.MeasureString(p.Text, valueFont).Width);
+                float x = Width - totalWidth - padX;
+                foreach ((string text, Color color) in parts)
+                {
+                    using var partBrush = new SolidBrush(color);
+                    g.DrawString(text, valueFont, partBrush, x, headerTop - 4);
+                    x += g.MeasureString(text, valueFont).Width;
+                }
+            }
+            else
+            {
+                using var valueBrush = new SolidBrush(Color.White);
+                SizeF measured = g.MeasureString(ValueText, valueFont);
+                g.DrawString(ValueText, valueFont, valueBrush, Width - measured.Width - padX, headerTop - 4);
+            }
         }
 
         if (!string.IsNullOrEmpty(SubText))

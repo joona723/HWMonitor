@@ -102,7 +102,11 @@ sealed class ConnectionTrackerForm : Form
         foreach ((ConnectionInfo connection, PerformanceGraph graph) in _tracked)
         {
             (long rx, long tx) = _etwMonitor.GetRatesForConnection(connection);
-            graph.ValueText = $"{NetRateGlyphs.Download} {MainForm.FormatBytesPerSec(rx)}   {NetRateGlyphs.Upload} {MainForm.FormatBytesPerSec(tx)}";
+            graph.ValueTextParts =
+            [
+                ($"{NetRateGlyphs.Download} {MainForm.FormatBytesPerSec(rx)}   ", NetRateGlyphs.DownloadColor),
+                ($"{NetRateGlyphs.Upload} {MainForm.FormatBytesPerSec(tx)}", NetRateGlyphs.UploadColor),
+            ];
             graph.AddSample(rx + tx);
         }
     }

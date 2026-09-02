@@ -205,6 +205,7 @@ sealed class MainForm : Form
         _connectionGrid.MultiSelect = true;
         _connectionGrid.Columns["Usage"]!.ToolTipText =
             $"Current network speed for this connection's process:\n{NetRateGlyphs.Download} In = incoming/download rate\n{NetRateGlyphs.Upload} Out = outgoing/upload rate";
+        _connectionGrid.CellPainting += PaintConnectionUsageCell;
         _connectionGrid.ColumnHeaderMouseClick += (_, e) => OnSortColumnClicked(_connectionGrid, e.ColumnIndex, ref _connectionSortColumn, ref _connectionSortDescending, RenderConnectionRows);
         _connectionGrid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) ShowProcessPropertiesForPid((int)_connectionGrid.Rows[e.RowIndex].Cells["PID"].Value); };
         _connectionSearchBox.TextChanged += (_, _) => RenderConnectionRows();
@@ -996,7 +997,11 @@ sealed class MainForm : Form
         _memChipValue.Text = $"{memPercent:0}%";
 
         double netTotal = stats.NetworkRxBytesPerSec + stats.NetworkTxBytesPerSec;
-        _netGraph.ValueText = $"{NetRateGlyphs.Download}{FormatBytesPerSec((long)stats.NetworkRxBytesPerSec)}  {NetRateGlyphs.Upload}{FormatBytesPerSec((long)stats.NetworkTxBytesPerSec)}";
+        _netGraph.ValueTextParts =
+        [
+            ($"{NetRateGlyphs.Download}{FormatBytesPerSec((long)stats.NetworkRxBytesPerSec)}  ", NetRateGlyphs.DownloadColor),
+            ($"{NetRateGlyphs.Upload}{FormatBytesPerSec((long)stats.NetworkTxBytesPerSec)}", NetRateGlyphs.UploadColor),
+        ];
         _netGraph.AddSample(netTotal);
         _netChipValue.Text = FormatBytesPerSec((long)netTotal);
 
@@ -1249,6 +1254,41 @@ sealed class MainForm : Form
         }
         _connectionGrid.ResumeLayout();
         UpdateSortGlyphs(_connectionGrid, _connectionSortColumn, _connectionSortDescending);
+    }
+
+    /// <summary>Draws the "Usage" cell's download/upload rates in their own colors instead of one flat text color.</summary>
+    private void PaintConnectionUsageCell(object? sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != _connectionGrid.Columns["Usage"]!.Index || _connectionGrid.Rows[e.RowIndex].Tag is not ConnectionInfo c)
+        {
+            return;
+        }
+
+        e.Paint(e.CellBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.ContentForeground);
+
+        Graphics g = e.Graphics!;
+        Rectangle bounds = e.CellBounds;
+        bounds.Inflate(-e.CellStyle!.Padding.Left, 0);
+        const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding;
+
+        if (!_etwMonitor.IsRunning)
+        {
+            TextRenderer.DrawText(g, "n/a", e.CellStyle.Font, bounds, TextSecondary, flags);
+            e.Handled = true;
+            return;
+        }
+
+        (long rx, long tx) = _etwMonitor.GetRatesForProcess(c.Pid);
+        string downText = $"{NetRateGlyphs.Download}{FormatBytesPerSec(rx)} ";
+        string upText = $"{NetRateGlyphs.Upload}{FormatBytesPerSec(tx)}";
+
+        Size downSize = TextRenderer.MeasureText(g, downText, e.CellStyle.Font, bounds.Size, flags);
+        TextRenderer.DrawText(g, downText, e.CellStyle.Font, bounds, NetRateGlyphs.DownloadColor, flags);
+
+        var upBounds = new Rectangle(bounds.Left + downSize.Width, bounds.Top, Math.Max(bounds.Width - downSize.Width, 0), bounds.Height);
+        TextRenderer.DrawText(g, upText, e.CellStyle.Font, upBounds, NetRateGlyphs.UploadColor, flags);
+
+        e.Handled = true;
     }
 
     private void AttachConnectionContextMenu()

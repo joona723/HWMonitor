@@ -9,4 +9,7 @@ static class NetRateGlyphs
 {
     public const string Download = "▼";
     public const string Upload = "▲";
+
+    public static readonly Color DownloadColor = Color.FromArgb(102, 187, 106);
+    public static readonly Color UploadColor = Color.FromArgb(255, 167, 38);
 }
